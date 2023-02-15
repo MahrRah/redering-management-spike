@@ -4,7 +4,6 @@ using Microsoft.ApplicationInsights.Extensibility;
 using Microsoft.ApplicationInsights.Extensibility.PerfCounterCollector.QuickPulse;
 using Prometheus;
 using rende.manager.Controllers;
-using Nvidia.Nvml;
 using System.Diagnostics;
 
 public class NvidiaMetricsService : IHostedService, IDisposable
@@ -17,6 +16,8 @@ public class NvidiaMetricsService : IHostedService, IDisposable
 
     private  readonly Gauge TotalGpuMemoryLoad = Metrics
     .CreateGauge("device_gpu_memory_load", "Total Memory load of a NVIDIA GPU.");
+    private  readonly Gauge TotalGpuMemoryLoad2 = Metrics
+    .CreateGauge("device_gpu_memory_load2", "Total Memory load of a NVIDIA GPU 2.");
     private  Dictionary<string, Gauge> ProcessGpuMemoryLoad = new Dictionary<string, Gauge> { };
 
 
@@ -107,7 +108,7 @@ public class NvidiaMetricsService : IHostedService, IDisposable
         {
             total_requested_GPU += session.Requested_gpu_ram_load;
         }
-        var metrics = new Dictionary<string, double> { { "GPU_RAM_load_requested", total_requested_GPU } };
+        var metrics = new Dictionary<string, double> { { "GPU_RAM_load", total_requested_GPU } };
         client.TrackEvent("GPU Metrics", properties, metrics);
     }
 
@@ -118,20 +119,34 @@ public class NvidiaMetricsService : IHostedService, IDisposable
         var properties = new Dictionary<string, string> { { "Device", "NVIDIA" }, { "GPU", "Used" }, { "VM", "VM-ID-0001" } };
         var category = new PerformanceCounterCategory("GPU Adapter Memory");
         // TODO: Get instance properly
-        var _gpu_counter = category.GetCounters("luid_0x00000000_0x00009CBF_phys_0");
-        foreach (var counter in _gpu_counter)
+        var instances = category.GetInstanceNames();
+        var _gpu_counter1 = category.GetCounters(instances[0]);
+        var _gpu_counter2 = category.GetCounters(instances[1]);
+
+        var metrics = new Dictionary<string, double> {};
+        foreach (var counter in _gpu_counter1)
         {
             if (counter.CounterName == "Total Committed")
             {
                 var value = counter.NextValue();
                 _logger.LogInformation("GPU load is {GpuLoad}", value);
-                var metrics = new Dictionary<string, double> { { "GPU_RAM_load", value } };
-                client.TrackEvent("GPU Metrics", properties, metrics);
-                // Prometheus metrics
                 TotalGpuMemoryLoad.Set(value);
+                metrics.Add("GPU_RAM_load_1", value );
             }
 
         }
+        foreach (var counter in _gpu_counter2)
+        {
+            if (counter.CounterName == "Total Committed")
+            {
+                var value = counter.NextValue();
+                _logger.LogInformation("GPU load is {GpuLoad}", value);
+                TotalGpuMemoryLoad2.Set(value);
+                metrics.Add("GPU_RAM_load_2", value );
+            }
+
+        }
+        client.TrackEvent("GPU Metrics", properties, metrics);
 
 
     }

@@ -8,7 +8,6 @@
 
   <PropertyGroup Condition=" '$(RunConfiguration)' == 'foo_test' " />
   <ItemGroup>
-    <ProjectReference Include="../../../../metrics-spike/nvml-csharp/NvmlLib/NvmlLib.csproj" />
     <PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.21.0" />
     <PackageReference Include="Microsoft.ApplicationInsights.PerfCounterCollector" Version="2.21.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="7.0.0" />
@@ -18,4 +17,7 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.2.3" />
   </ItemGroup>
 
+<PropertyGroup>
+    <RuntimeIdentifiers>win10-x64;ubuntu.16.10-x64</RuntimeIdentifiers>
+</PropertyGroup>
 </Project>
