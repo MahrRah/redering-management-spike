@@ -8,17 +8,20 @@ using System.Diagnostics;
 
 public class NvidiaMetricsService : IHostedService, IDisposable
 {
+    private static int TOTAL_GPU_CAPACITY = 16;
+    private static int MAX_MODEL_SIZE = 8;
     private int executionCount = 0;
     private readonly ILogger<NvidiaMetricsService> _logger;
     private TelemetryClient client;
     private Timer _timer;
     private SessionDB _sessions;
+    private string vm_id = "VM-ID-0001";
 
-    private  readonly Gauge TotalGpuMemoryLoad = Metrics
+    private readonly Gauge TotalGpuLoadGauge = Metrics
     .CreateGauge("device_gpu_memory_load", "Total Memory load of a NVIDIA GPU.");
-    private  readonly Gauge TotalGpuMemoryLoad2 = Metrics
+    private readonly Gauge TotalGpuLoadGauge2 = Metrics
     .CreateGauge("device_gpu_memory_load2", "Total Memory load of a NVIDIA GPU 2.");
-    private  Dictionary<string, Gauge> ProcessGpuMemoryLoad = new Dictionary<string, Gauge> { };
+    private Dictionary<string, Gauge> ProcessGpuMemoryLoadGauges = new Dictionary<string, Gauge> { };
 
 
     public NvidiaMetricsService(ILogger<NvidiaMetricsService> logger, SessionDB db)
@@ -29,7 +32,7 @@ public class NvidiaMetricsService : IHostedService, IDisposable
 
     public Task StartAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Timed Hosted Service running.");
+        _logger.LogInformation("Start mertics publishing service.");
         TelemetryConfiguration config = TelemetryConfiguration.CreateDefault();
         config.InstrumentationKey = Environment.GetEnvironmentVariable("INSTRUMENTATION_KEY");
         QuickPulseTelemetryProcessor quickPulseProcessor = null;
@@ -63,28 +66,23 @@ public class NvidiaMetricsService : IHostedService, IDisposable
     private void DoWork(object state)
     {
         var count = Interlocked.Increment(ref executionCount);
-        GetTotalRequestedGpuMemoryLoad();
+
+        RequestedGpuMemoryLoadMetrics();
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
 
-            GetTotalGpuMemoryLoad();
-            GetProcessGpuMemoryLoad();
-        }
-        else
-        {
-            GetTotalGpuMemoryLoadMock();
-            GetProcessGpuMemoryLoadMock();
-
+            TotalGpuMemoryLoad();
+            ProcessGpuMemoryLoad();
         }
 
         _logger.LogInformation(
-            "Timed Hosted Service is working. Count: {Count}", count);
+            "Published metrics count: {Count}", count);
     }
 
     public Task StopAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Timed Hosted Service is stopping.");
+        _logger.LogInformation("Mertics Service is stopping.");
 
         _timer?.Change(Timeout.Infinite, 0);
 
@@ -96,42 +94,45 @@ public class NvidiaMetricsService : IHostedService, IDisposable
         _timer?.Dispose();
     }
 
-    // extrall all this stuff into another util class
 
-    private void GetTotalRequestedGpuMemoryLoad()
+
+
+
+
+    private void RequestedGpuMemoryLoadMetrics()
     {
+        int free_gpu_capactity = GetFreeCapacity();
+        int total_requested_gpu = GetTotalRequestedGPUCapacity();
+        int has_space_for_max_model = HasSpaceForMaxModel();
         // Application Insights live metrics
-        var properties = new Dictionary<string, string> { { "Device", "NVIDIA" }, { "GPU", "Requested" }, { "VM", "VM-ID-0001" } };
+        var properties = new Dictionary<string, string> { { "Device", "NVIDIA" }, { "GPU", "Requested" }, { "VM", vm_id } };
 
-        int total_requested_GPU = 0;
-        foreach (Session session in _sessions.GetSessions())
-        {
-            total_requested_GPU += session.Requested_gpu_ram_load;
-        }
-        var metrics = new Dictionary<string, double> { { "GPU_RAM_load", total_requested_GPU } };
+
+        var metrics = new Dictionary<string, double> { { "GPU_RAM_capacity", free_gpu_capactity }, { "GPU_RAM_load", total_requested_gpu }, { "Space_for_max_model", has_space_for_max_model } };
         client.TrackEvent("GPU Metrics", properties, metrics);
     }
 
 
-    private void GetTotalGpuMemoryLoad()
+
+    private void TotalGpuMemoryLoad()
     {
 
-        var properties = new Dictionary<string, string> { { "Device", "NVIDIA" }, { "GPU", "Used" }, { "VM", "VM-ID-0001" } };
+        var properties = new Dictionary<string, string> { { "Device", "NVIDIA" }, { "GPU", "Used" }, { "VM", vm_id } };
         var category = new PerformanceCounterCategory("GPU Adapter Memory");
-        // TODO: Get instance properly
+        // TODO: Get instance properly. One is Nvidia GPU the other is internal GPU with constant load
         var instances = category.GetInstanceNames();
         var _gpu_counter1 = category.GetCounters(instances[0]);
         var _gpu_counter2 = category.GetCounters(instances[1]);
 
-        var metrics = new Dictionary<string, double> {};
+        var metrics = new Dictionary<string, double> { };
         foreach (var counter in _gpu_counter1)
         {
             if (counter.CounterName == "Total Committed")
             {
                 var value = counter.NextValue();
                 _logger.LogInformation("GPU load is {GpuLoad}", value);
-                TotalGpuMemoryLoad.Set(value);
-                metrics.Add("GPU_RAM_load_1", value );
+                TotalGpuLoadGauge.Set(value);
+                metrics.Add("GPU_RAM_load_1", value);
             }
 
         }
@@ -141,8 +142,8 @@ public class NvidiaMetricsService : IHostedService, IDisposable
             {
                 var value = counter.NextValue();
                 _logger.LogInformation("GPU load is {GpuLoad}", value);
-                TotalGpuMemoryLoad2.Set(value);
-                metrics.Add("GPU_RAM_load_2", value );
+                TotalGpuLoadGauge2.Set(value);
+                metrics.Add("GPU_RAM_load_2", value);
             }
 
         }
@@ -150,7 +151,7 @@ public class NvidiaMetricsService : IHostedService, IDisposable
 
 
     }
-    private void GetProcessGpuMemoryLoad()
+    private void ProcessGpuMemoryLoad()
     {
         var _gpu_process_counter = new PerformanceCounterCategory("GPU Process Memory");
         var processes = _gpu_process_counter.GetInstanceNames();
@@ -161,22 +162,22 @@ public class NvidiaMetricsService : IHostedService, IDisposable
             {
 
                 Gauge? process_gauge;
-                if (!ProcessGpuMemoryLoad.ContainsKey(process))
+                if (!ProcessGpuMemoryLoadGauges.ContainsKey(process))
                 {
 
                     process_gauge = Metrics.CreateGauge($"{process}_gpu_committed", $"Memory load of Process wirth PID: {process}.");
-                    ProcessGpuMemoryLoad.Add(process, process_gauge);
+                    ProcessGpuMemoryLoadGauges.Add(process, process_gauge);
                 }
-               
-                process_gauge = ProcessGpuMemoryLoad.GetValueOrDefault(process);
-                
+
+                process_gauge = ProcessGpuMemoryLoadGauges.GetValueOrDefault(process);
+
                 var counters = _gpu_process_counter.GetCounters(process);
                 foreach (var counter in counters)
                 {
                     if (counter.CounterName == "Total Committed")
                     {
                         var value = counter.NextValue();
-                        _logger.LogInformation($"Process {process} metrics value {value}",process,value);
+                        _logger.LogInformation($"Process {process} metrics value {value}", process, value);
                         // Prometheus metrics
                         process_gauge.Set(value);
                     }
@@ -186,39 +187,29 @@ public class NvidiaMetricsService : IHostedService, IDisposable
         }
     }
 
-
-    private void GetTotalGpuMemoryLoadMock()
+    private int GetTotalRequestedGPUCapacity()
     {
-
-        // Get Metrics
-        Random rd = new Random();
-        int rand_num = rd.Next(10, 200);
-        _logger.LogInformation("GPU load is {GpuLoad}", rand_num);
-
-        // Prometheus metrics
-        TotalGpuMemoryLoad.Set(rand_num);
-    }
-
-    private void GetProcessGpuMemoryLoadMock()
-    {
-        Random rd = new Random();
-        List<string> processes = new List<string>() { "PID_XXXXX1", "PID_XXXXX2", "PID_XXXXX3" };
-        foreach (var process in processes)
+        int total_requested_GPU = 0;
+        foreach (Session session in _sessions.GetSessions())
         {
-            Gauge? process_gauge;
-            if (!ProcessGpuMemoryLoad.ContainsKey(process))
-            {
-                process_gauge = Metrics.CreateGauge($"process_gpu_memory_load_{process}", $"Memory load of Process wirth PID: {process}.");
-                ProcessGpuMemoryLoad.Add(process, process_gauge);
-            }
-            else
-            {
-                process_gauge = ProcessGpuMemoryLoad.GetValueOrDefault(process);
-            }
-            int rand_num = rd.Next(10, 200);
-            process_gauge.Set(rand_num);
+            total_requested_GPU += session.Requested_gpu_ram_load;
         }
-
+        return total_requested_GPU;
+    }
+    private int GetFreeCapacity()
+    {
+        return TOTAL_GPU_CAPACITY - GetTotalRequestedGPUCapacity();
 
     }
+    private int HasSpaceForMaxModel()
+    {
+        int freeSpace = GetFreeCapacity();
+        if (freeSpace >= MAX_MODEL_SIZE)
+        {
+            return 1;
+        }
+        return 0;
+
+    }
+
 }
