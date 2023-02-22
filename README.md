@@ -14,3 +14,7 @@ export INSTRUMENTATION_KEY="<AppInsights-INSTRUMENTATION_KEY>"
 
 2. Run project 
 
+```sh 
+cd rende.manager
+dotnet run  --project rende.manager
+```
